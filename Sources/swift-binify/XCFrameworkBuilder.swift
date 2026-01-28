@@ -1,7 +1,8 @@
 import Foundation
 import Cockle
+import ScipioKit
 
-/// Builds xcframeworks using xcodebuild
+/// Builds xcframeworks using Scipio
 struct XCFrameworkBuilder {
     let packagePath: URL
     let packageName: String
@@ -11,11 +12,8 @@ struct XCFrameworkBuilder {
     
     private let dylibsPath = "/tmp/swift-binify-dylibs"
     
-    /// Build a scheme as a dynamic xcframework
-    /// - Parameters:
-    ///   - scheme: The xcodebuild scheme name to build
-    ///   - outputName: The name for the output xcframework
-    func build(scheme: String, outputName: String) async throws -> String {
+    /// Build all targets using Scipio, then copy only the ones we need
+    func buildAll(targets: [String]) async throws -> [String: String] {
         let fileManager = FileManager.default
         
         let outputDir = URL(fileURLWithPath: dylibsPath).appendingPathComponent(packageName)
@@ -23,14 +21,12 @@ struct XCFrameworkBuilder {
         // Create output directory
         try fileManager.createDirectory(at: outputDir, withIntermediateDirectories: true)
         
-        // Build directory for intermediate artifacts
-        let buildDir = packagePath.appendingPathComponent(".build/xcframework-build")
-        try? fileManager.removeItem(at: buildDir)
-        try fileManager.createDirectory(at: buildDir, withIntermediateDirectories: true)
-        
         // Rewrite Package.swift to use local dependencies and force dynamic libraries
         let packageSwiftURL = packagePath.appendingPathComponent("Package.swift")
         let originalContent = try String(contentsOf: packageSwiftURL, encoding: .utf8)
+        
+        // Scipio output directory
+        let scipioOutputDir = packagePath.appendingPathComponent("XCFrameworks")
         
         do {
             // Modify Package.swift
@@ -41,46 +37,56 @@ struct XCFrameworkBuilder {
                 try modifiedContent.write(to: packageSwiftURL, atomically: true, encoding: .utf8)
             }
             
-            // Build for each supported platform
-            var frameworkPaths: [String] = []
+            // Clean previous Scipio output
+            try? fileManager.removeItem(at: scipioOutputDir)
             
-            for platform in platforms.sorted(by: { $0.rawValue < $1.rawValue }) {
-                let slices = platform.buildSlices
-                for slice in slices {
-                    print("      \(slice.displayName)...")
-                    let frameworkPath = try await buildForPlatform(
-                        scheme: scheme,
-                        sdk: slice.sdk,
-                        destination: slice.destination,
-                        buildDir: buildDir
-                    )
-                    frameworkPaths.append(frameworkPath)
-                }
-            }
+            // Convert our platforms to Scipio platforms
+            let scipioPlatforms: Set<Runner.Options.Platform> = Set(platforms.compactMap { $0.scipioPlatform })
+            
+            let runner = Runner(
+                mode: .createPackage,
+                options: .init(
+                    baseBuildOptions: .init(
+                        buildConfiguration: configuration == "debug" ? .debug : .release,
+                        platforms: .specific(scipioPlatforms),
+                        isSimulatorSupported: true,
+                        isDebugSymbolsEmbedded: false,
+                        frameworkType: .dynamic,
+                        enableLibraryEvolution: true
+                    ),
+                    shouldOnlyUseVersionsFromResolvedFile: false,
+                    frameworkCachePolicies: [],
+                    resolvedPackagesCachePolicies: [],
+                    overwrite: true,
+                    verbose: false
+                )
+            )
+            
+            try await runner.run(packageDirectory: packagePath, frameworkOutputDir: .custom(scipioOutputDir))
             
             // Restore original Package.swift
             try originalContent.write(to: packageSwiftURL, atomically: true, encoding: .utf8)
             
-            // Create xcframework
-            let xcframeworkPath = outputDir.appendingPathComponent("\(outputName).xcframework")
+            // Copy only the xcframeworks for the targets we want (not dependencies)
+            var results: [String: String] = [:]
             
-            // Remove existing xcframework
-            try? fileManager.removeItem(at: xcframeworkPath)
-            
-            // Build create-xcframework command
-            var createArgs = ["-create-xcframework"]
-            for path in frameworkPaths {
-                createArgs += ["-framework", path]
+            for target in targets {
+                let sourceXCFramework = scipioOutputDir.appendingPathComponent("\(target).xcframework")
+                let destXCFramework = outputDir.appendingPathComponent("\(target).xcframework")
+                
+                if fileManager.fileExists(atPath: sourceXCFramework.path) {
+                    // Remove existing
+                    try? fileManager.removeItem(at: destXCFramework)
+                    // Copy
+                    try fileManager.copyItem(at: sourceXCFramework, to: destXCFramework)
+                    results[target] = destXCFramework.path
+                }
             }
-            createArgs += ["-output", xcframeworkPath.path]
             
-            let shell = try Shell()
-            _ = try await shell.execute(path: "/usr/bin/xcodebuild", args: createArgs)
+            // Cleanup Scipio output
+            try? fileManager.removeItem(at: scipioOutputDir)
             
-            // Cleanup build directory
-            try? fileManager.removeItem(at: buildDir)
-            
-            return xcframeworkPath.path
+            return results
             
         } catch {
             // Always restore original Package.swift on error
@@ -123,13 +129,10 @@ struct XCFrameworkBuilder {
     }
     
     /// Rewrite .library products to be dynamic
-    /// Changes: .library(name: "Foo", targets: [...])
-    /// To:      .library(name: "Foo", type: .dynamic, targets: [...])
     private func rewriteLibrariesToDynamic(in content: String) -> String {
         var result = content
         
         // Pattern to match .library(name: "...", targets: [...]) without an explicit type
-        // We need to add type: .dynamic after the name
         let pattern = #"\.library\s*\(\s*name:\s*("[^"]+")\s*,\s*targets:"#
         
         if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
@@ -146,114 +149,32 @@ struct XCFrameworkBuilder {
         
         return result
     }
-    
-    private func buildForPlatform(
-        scheme: String,
-        sdk: String,
-        destination: String,
-        buildDir: URL
-    ) async throws -> String {
-        let derivedDataPath = buildDir.appendingPathComponent("DerivedData-\(sdk)")
-        
-        // Build the xcodebuild command
-        var buildArgs = ["build"]
-        buildArgs += ["-scheme", scheme]
-        buildArgs += ["-configuration", configuration.capitalized]
-        buildArgs += ["-sdk", sdk]
-        buildArgs += ["-destination", destination]
-        buildArgs += ["-derivedDataPath", derivedDataPath.path]
-        buildArgs += ["-skipPackagePluginValidation"]
-        buildArgs += ["-skipMacroValidation"]
-        // Settings for building a distributable framework with module interfaces
-        buildArgs += ["BUILD_LIBRARY_FOR_DISTRIBUTION=YES"]
-        buildArgs += ["SWIFT_EMIT_MODULE_INTERFACE=YES"]
-        
-        let shell = try Shell()
-        try await shell.cd(packagePath.path)
-        _ = try await shell.execute(path: "/usr/bin/xcodebuild", args: buildArgs)
-        
-        // Find the built framework - could be in different locations
-        let productsDir = derivedDataPath
-            .appendingPathComponent("Build/Products")
-            .appendingPathComponent(productsDirName(for: sdk))
-        
-        // Try direct path first, then PackageFrameworks subdirectory
-        let possiblePaths = [
-            productsDir.appendingPathComponent("\(scheme).framework"),
-            productsDir.appendingPathComponent("PackageFrameworks/\(scheme).framework"),
-        ]
-        
-        for frameworkPath in possiblePaths {
-            if FileManager.default.fileExists(atPath: frameworkPath.path) {
-                return frameworkPath.path
-            }
-        }
-        
-        throw BuildError.frameworkNotFound(scheme, sdk)
-    }
-    
-    private func productsDirName(for sdk: String) -> String {
-        // macOS has no suffix (just "Release" or "Debug")
-        // Other platforms have suffix like "Release-iphoneos"
-        switch sdk {
-        case "macosx":
-            return configuration.capitalized
-        default:
-            return "\(configuration.capitalized)-\(sdk)"
-        }
-    }
 }
 
-// MARK: - Platform Build Configuration
-
-struct BuildSlice {
-    let sdk: String
-    let destination: String
-    let displayName: String
-}
+// MARK: - Platform Configuration
 
 extension Platform {
-    /// Returns all build slices for this platform (device + simulator where applicable)
-    var buildSlices: [BuildSlice] {
+    var scipioPlatform: Runner.Options.Platform? {
         switch self {
-        case .macos:
-            return [
-                BuildSlice(sdk: "macosx", destination: "generic/platform=macOS", displayName: "macOS")
-            ]
-        case .ios:
-            return [
-                BuildSlice(sdk: "iphoneos", destination: "generic/platform=iOS", displayName: "iOS"),
-                BuildSlice(sdk: "iphonesimulator", destination: "generic/platform=iOS Simulator", displayName: "iOS Simulator")
-            ]
-        case .tvos:
-            return [
-                BuildSlice(sdk: "appletvos", destination: "generic/platform=tvOS", displayName: "tvOS"),
-                BuildSlice(sdk: "appletvsimulator", destination: "generic/platform=tvOS Simulator", displayName: "tvOS Simulator")
-            ]
-        case .watchos:
-            return [
-                BuildSlice(sdk: "watchos", destination: "generic/platform=watchOS", displayName: "watchOS"),
-                BuildSlice(sdk: "watchsimulator", destination: "generic/platform=watchOS Simulator", displayName: "watchOS Simulator")
-            ]
-        case .visionos:
-            return [
-                BuildSlice(sdk: "xros", destination: "generic/platform=visionOS", displayName: "visionOS"),
-                BuildSlice(sdk: "xrsimulator", destination: "generic/platform=visionOS Simulator", displayName: "visionOS Simulator")
-            ]
+        case .ios: return .iOS
+        case .macos: return .macOS
+        case .tvos: return .tvOS
+        case .watchos: return .watchOS
+        case .visionos: return .visionOS
         }
     }
 }
 
 enum BuildError: Error, LocalizedError {
     case commandFailed(String, String)
-    case frameworkNotFound(String, String)
+    case frameworkNotFound(String)
     
     var errorDescription: String? {
         switch self {
         case .commandFailed(let cmd, let output):
             return "\(cmd) failed:\n\(output.prefix(500))"
-        case .frameworkNotFound(let product, let sdk):
-            return "Framework not found for \(product) (\(sdk))"
+        case .frameworkNotFound(let name):
+            return "Framework not found: \(name)"
         }
     }
 }
