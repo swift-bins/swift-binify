@@ -31,6 +31,10 @@ struct SwiftBinify: AsyncParsableCommand {
     func run() async throws {
         let packageURL = URL(fileURLWithPath: packagePath).standardizedFileURL
         
+        // Package identity is derived from directory name (lowercase)
+        // This matches how SPM identifies packages
+        let packageIdentity = packageURL.lastPathComponent.lowercased()
+        
         print("📦 Swift Binify")
         print("   Package: \(packageURL.path)")
         print("")
@@ -41,6 +45,7 @@ struct SwiftBinify: AsyncParsableCommand {
         let packageInfo = try await analyzer.analyze(packagePath: packageURL)
         
         print("   Name: \(packageInfo.name)")
+        print("   Identity: \(packageIdentity)")
         print("   Platforms: \(packageInfo.platforms.map { $0.displayName }.sorted().joined(separator: ", "))")
         print("   Targets to build: \(packageInfo.buildTargets.map { $0.name }.joined(separator: ", "))")
         if !packageInfo.dependencies.isEmpty {
@@ -54,11 +59,12 @@ struct SwiftBinify: AsyncParsableCommand {
         }
         
         // Step 2: Build all targets with Scipio
-        let outputDir = URL(fileURLWithPath: "/tmp/swift-binify-dylibs/\(packageInfo.name)")
+        // Use package identity for directory (matches SPM behavior)
+        let outputDir = URL(fileURLWithPath: "/tmp/swift-binify-dylibs/\(packageIdentity)")
         
         let builder = XCFrameworkBuilder(
             packagePath: packageURL,
-            packageName: packageInfo.name,
+            packageName: packageIdentity,
             configuration: configuration,
             platforms: packageInfo.platforms,
             dependencies: packageInfo.dependencies

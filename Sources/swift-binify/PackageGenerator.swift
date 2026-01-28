@@ -40,11 +40,11 @@ struct PackageGenerator {
         lines.append("let package = Package(")
         lines.append("    name: \"\(packageInfo.name)\",")
         
-        // Platforms
-        if !packageInfo.platforms.isEmpty {
-            let platformDecls = packageInfo.platforms
-                .sorted { $0.rawValue < $1.rawValue }
-                .map { $0.swiftPlatformDeclaration }
+        // Platforms - preserve original versions from source package
+        if !packageInfo.platformVersions.isEmpty {
+            let platformDecls = packageInfo.platformVersions
+                .sorted { $0.platform.rawValue < $1.platform.rawValue }
+                .map { $0.swiftDeclaration }
                 .joined(separator: ", ")
             lines.append("    platforms: [\(platformDecls)],")
         }

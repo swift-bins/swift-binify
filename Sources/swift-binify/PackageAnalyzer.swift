@@ -72,18 +72,21 @@ struct PackageAnalyzer {
             )
         }
         
-        // Parse platforms - if none specified, default to macOS + iOS
-        var platforms: Set<Platform> = []
+        // Parse platforms with their versions
+        var platformVersions: [PlatformVersion] = []
         if let platformDumps = dump.platforms, !platformDumps.isEmpty {
             for p in platformDumps {
-                if let platform = Platform(rawValue: p.platformName.lowercased()) {
-                    platforms.insert(platform)
+                if let platform = PlatformKind(rawValue: p.platformName.lowercased()) {
+                    platformVersions.append(PlatformVersion(platform: platform, version: p.version))
                 }
             }
         } else {
             // No platforms specified = supports all platforms
-            // Default to macOS and iOS for xcframework builds
-            platforms = [.macos, .ios]
+            // Default to macOS and iOS with reasonable minimums
+            platformVersions = [
+                PlatformVersion(platform: .ios, version: "13.0"),
+                PlatformVersion(platform: .macos, version: "10.15")
+            ]
         }
         
         // Parse external dependencies
@@ -120,7 +123,7 @@ struct PackageAnalyzer {
             name: dump.name,
             toolsVersion: toolsVersion,
             products: products,
-            platforms: platforms,
+            platformVersions: platformVersions,
             dependencies: dependencies,
             buildTargets: buildTargets,
             availableSchemes: availableSchemes
@@ -185,7 +188,7 @@ struct ToolsVersionDump: Codable {
 
 // MARK: - Package Info
 
-enum Platform: String, CaseIterable {
+enum PlatformKind: String, CaseIterable {
     case ios
     case macos
     case tvos
@@ -202,25 +205,64 @@ enum Platform: String, CaseIterable {
         }
     }
     
-    var swiftPlatformDeclaration: String {
+    var swiftPlatformName: String {
         switch self {
-        case .ios: return ".iOS(.v13)"
-        case .macos: return ".macOS(.v10_15)"
-        case .tvos: return ".tvOS(.v13)"
-        case .watchos: return ".watchOS(.v6)"
-        case .visionos: return ".visionOS(.v1)"
+        case .ios: return ".iOS"
+        case .macos: return ".macOS"
+        case .tvos: return ".tvOS"
+        case .watchos: return ".watchOS"
+        case .visionos: return ".visionOS"
         }
     }
 }
+
+struct PlatformVersion {
+    let platform: PlatformKind
+    let version: String
+    
+    /// Converts version like "12.0" to Swift declaration like ".iOS(.v12)"
+    var swiftDeclaration: String {
+        let versionEnum = versionToEnum(version)
+        return "\(platform.swiftPlatformName)(\(versionEnum))"
+    }
+    
+    private func versionToEnum(_ version: String) -> String {
+        // Convert "12.0" -> ".v12", "13.4" -> ".v13_4", "10.15" -> ".v10_15"
+        let parts = version.split(separator: ".").map(String.init)
+        
+        if parts.count >= 2 {
+            let major = parts[0]
+            let minor = parts[1]
+            
+            if minor == "0" {
+                return ".v\(major)"
+            } else {
+                return ".v\(major)_\(minor)"
+            }
+        } else if parts.count == 1 {
+            return ".v\(parts[0])"
+        }
+        
+        return ".v\(version.replacingOccurrences(of: ".", with: "_"))"
+    }
+}
+
+// Keep Platform as an alias for compatibility with XCFrameworkBuilder
+typealias Platform = PlatformKind
 
 struct PackageInfo {
     let name: String
     let toolsVersion: String
     let products: [Product]
-    let platforms: Set<Platform>
+    let platformVersions: [PlatformVersion]
     let dependencies: [Dependency]
     let buildTargets: [BuildTarget]
     let availableSchemes: Set<String>
+    
+    /// Convenience to get just the platform kinds (for Scipio)
+    var platforms: Set<PlatformKind> {
+        Set(platformVersions.map { $0.platform })
+    }
     
     struct Product {
         let name: String
