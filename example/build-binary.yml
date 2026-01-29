@@ -180,7 +180,7 @@ jobs:
 
           ## Usage
 
-          Replace your existing source dependency in \`Package.swift\`:
+          **1. Update your package dependency:**
 
           \`\`\`swift
           // Before (builds from source)
@@ -188,6 +188,16 @@ jobs:
 
           // After (uses pre-built binaries)
           .package(url: "https://github.com/${{ github.repository }}", from: "${TAG}")
+          \`\`\`
+
+          **2. Update your target dependency** (package name changes):
+
+          \`\`\`swift
+          // Before
+          .product(name: "${SOURCE_NAME}", package: "${SOURCE_NAME}")
+
+          // After
+          .product(name: "${SOURCE_NAME}", package: "${SOURCE_OWNER}_${SOURCE_NAME}")
           \`\`\`
 
           ## License
@@ -222,9 +232,10 @@ jobs:
             git commit -m "Build $TAG"
           fi
 
-          # Create and push tag
-          git tag "$TAG"
-          git push origin HEAD --tags
+          # Create/update tag to point to this commit and force push it
+          git tag -f "$TAG"
+          git push origin HEAD
+          git push origin "$TAG" --force
 
           echo "Changes committed and tagged"
 
