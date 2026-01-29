@@ -7,13 +7,13 @@ struct SwiftBinify: AsyncParsableCommand {
         abstract: "Build Swift packages as dynamic xcframeworks",
         discussion: """
             Builds all products of a Swift package as dynamic library xcframeworks.
-            
+
             Automatically detects supported platforms from Package.swift and builds
             for all of them. Simulators are always included for platforms that support them.
-            
+
             Output goes to /tmp/swift-binify-dylibs/<package-name>/ with a generated
             Package.swift that can be used as a drop-in replacement.
-            
+
             Usage in your project - just change:
                 .package(url: "https://github.com/foo/bar", from: "1.0.0")
             To:
@@ -21,47 +21,77 @@ struct SwiftBinify: AsyncParsableCommand {
             """,
         version: "1.0.0"
     )
-    
+
     @Argument(help: "Path to the Swift package directory")
     var packagePath: String
-    
+
     @Option(name: .long, help: "Build configuration (debug/release)")
     var configuration: String = "release"
-    
+
     func run() async throws {
-        let packageURL = URL(fileURLWithPath: packagePath).standardizedFileURL
-        
-        // Package identity is derived from directory name (lowercase)
-        // This matches how SPM identifies packages
+        let packageURL = resolvePackageURL()
         let packageIdentity = packageURL.lastPathComponent.lowercased()
-        
-        print("📦 Swift Binify")
-        print("   Package: \(packageURL.path)")
-        print("")
-        
-        // Step 1: Analyze the package
-        print("🔍 Analyzing package...")
-        let analyzer = PackageAnalyzer()
-        let packageInfo = try await analyzer.analyze(packagePath: packageURL)
-        
-        print("   Name: \(packageInfo.name)")
-        print("   Identity: \(packageIdentity)")
-        print("   Platforms: \(packageInfo.platforms.map { $0.displayName }.sorted().joined(separator: ", "))")
-        print("   Targets to build: \(packageInfo.buildTargets.map { $0.name }.joined(separator: ", "))")
-        if !packageInfo.dependencies.isEmpty {
-            print("   Dependencies: \(packageInfo.dependencies.map { $0.identity }.joined(separator: ", "))")
-        }
-        print("")
-        
-        if packageInfo.buildTargets.isEmpty {
-            print("⚠️  No buildable targets found")
+
+        printHeader(packageURL: packageURL)
+
+        let packageInfo = try await analyzePackage(at: packageURL)
+        printAnalysisResults(packageInfo, identity: packageIdentity)
+
+        guard !packageInfo.buildTargets.isEmpty else {
+            Console.warning("No buildable targets found")
             return
         }
-        
-        // Step 2: Build all targets with Scipio
-        // Use package identity for directory (matches SPM behavior)
-        let outputDir = URL(fileURLWithPath: "/tmp/swift-binify-dylibs/\(packageIdentity)")
-        
+
+        let outputDir = Constants.outputDirectory(for: packageIdentity)
+        let results = try await buildFrameworks(
+            packageInfo: packageInfo,
+            packageURL: packageURL,
+            packageIdentity: packageIdentity
+        )
+
+        try generateOutputAndPrintResults(
+            packageInfo: packageInfo,
+            results: results,
+            targetNames: packageInfo.buildTargets.map { $0.name },
+            outputDir: outputDir
+        )
+    }
+
+    // MARK: - Private Helpers
+
+    private func resolvePackageURL() -> URL {
+        URL(fileURLWithPath: packagePath).standardizedFileURL
+    }
+
+    private func printHeader(packageURL: URL) {
+        Console.header("Swift Binify")
+        Console.info("Package", packageURL.path)
+        Console.blank()
+    }
+
+    private func analyzePackage(at packageURL: URL) async throws -> PackageInfo {
+        Console.step("Analyzing package")
+        let analyzer = PackageAnalyzer()
+        return try await analyzer.analyze(packagePath: packageURL)
+    }
+
+    private func printAnalysisResults(_ packageInfo: PackageInfo, identity: String) {
+        Console.info("Name", packageInfo.name)
+        Console.info("Identity", identity)
+        Console.info("Platforms", packageInfo.platforms.map { $0.displayName }.sorted().joined(separator: ", "))
+        Console.info("Targets to build", packageInfo.buildTargets.map { $0.name }.joined(separator: ", "))
+
+        if !packageInfo.dependencies.isEmpty {
+            Console.info("Dependencies", packageInfo.dependencies.map { $0.identity }.joined(separator: ", "))
+        }
+        Console.blank()
+    }
+
+    private func buildFrameworks(
+        packageInfo: PackageInfo,
+        packageURL: URL,
+        packageIdentity: String
+    ) async throws -> [String: String] {
         let builder = XCFrameworkBuilder(
             packagePath: packageURL,
             packageName: packageIdentity,
@@ -69,65 +99,75 @@ struct SwiftBinify: AsyncParsableCommand {
             platforms: packageInfo.platforms,
             dependencies: packageInfo.dependencies
         )
-        
-        print("🔨 Building xcframeworks with Scipio...")
-        print("")
-        
+
+        Console.buildStep("Building xcframeworks with Scipio")
+        Console.blank()
+
         let targetNames = packageInfo.buildTargets.map { $0.name }
-        
-        do {
-            let results = try await builder.buildAll(targets: targetNames)
-            
-            let succeeded = results.keys.sorted()
-            let failed = targetNames.filter { !results.keys.contains($0) }
-            
-            for target in succeeded {
-                if let path = results[target] {
-                    print("   ✓ \(target) -> \(path)")
-                }
+        return try await builder.buildAll(targets: targetNames)
+    }
+
+    private func generateOutputAndPrintResults(
+        packageInfo: PackageInfo,
+        results: [String: String],
+        targetNames: [String],
+        outputDir: URL
+    ) throws {
+        let succeeded = results.keys.sorted()
+        let failed = targetNames.filter { !results.keys.contains($0) }
+
+        printBuildResults(succeeded: succeeded, failed: failed, results: results)
+
+        // Generate Package.swift wrapper
+        if !succeeded.isEmpty {
+            try generatePackageWrapper(packageInfo: packageInfo, succeeded: succeeded, outputDir: outputDir)
+        }
+
+        try printFinalStatus(succeeded: succeeded, failed: failed, outputDir: outputDir)
+    }
+
+    private func printBuildResults(succeeded: [String], failed: [String], results: [String: String]) {
+        for target in succeeded {
+            if let path = results[target] {
+                Console.success(target, detail: path)
             }
-            
-            for target in failed {
-                print("   ✗ \(target) - not found in build output")
-            }
-            print("")
-            
-            // Step 3: Generate Package.swift wrapper
-            if !succeeded.isEmpty {
-                print("📝 Generating Package.swift...")
-                let generator = PackageGenerator()
-                try generator.generate(
-                    packageInfo: packageInfo,
-                    builtProducts: succeeded,
-                    outputDir: outputDir
-                )
-                print("   ✓ \(outputDir.path)/Package.swift")
-                print("")
-            }
-            
-            if failed.isEmpty {
-                print("✅ Done! Built \(succeeded.count) framework(s)")
-                print("")
-                print("   To use in your project, change:")
-                print("      .package(url: \"...\", ...)")
-                print("   To:")
-                print("      .package(path: \"\(outputDir.path)\")")
-            } else if succeeded.isEmpty {
-                print("❌ Failed! No frameworks were built")
-                throw ExitCode.failure
-            } else {
-                print("⚠️  Partial success: \(succeeded.count) succeeded, \(failed.count) not found")
-                print("   Missing: \(failed.joined(separator: ", "))")
-                print("")
-                print("   To use in your project, change:")
-                print("      .package(url: \"...\", ...)")
-                print("   To:")
-                print("      .package(path: \"\(outputDir.path)\")")
-            }
-            
-        } catch {
-            print("   ✗ Build failed: \(error.localizedDescription)")
+        }
+
+        for target in failed {
+            Console.failure(target, reason: "not found in build output")
+        }
+        Console.blank()
+    }
+
+    private func generatePackageWrapper(
+        packageInfo: PackageInfo,
+        succeeded: [String],
+        outputDir: URL
+    ) throws {
+        Console.generateStep("Generating Package.swift")
+        let generator = PackageGenerator()
+        try generator.generate(
+            packageInfo: packageInfo,
+            builtProducts: succeeded,
+            outputDir: outputDir
+        )
+        Console.success("\(outputDir.path)/Package.swift")
+        Console.blank()
+    }
+
+    private func printFinalStatus(succeeded: [String], failed: [String], outputDir: URL) throws {
+        if failed.isEmpty {
+            Console.done("Done! Built \(succeeded.count) framework(s)")
+            Console.blank()
+            Console.usageInstructions(outputPath: outputDir.path)
+        } else if succeeded.isEmpty {
+            Console.error("Failed! No frameworks were built")
             throw ExitCode.failure
+        } else {
+            Console.warning("Partial success: \(succeeded.count) succeeded, \(failed.count) not found")
+            Console.info("Missing", failed.joined(separator: ", "))
+            Console.blank()
+            Console.usageInstructions(outputPath: outputDir.path)
         }
     }
 }
