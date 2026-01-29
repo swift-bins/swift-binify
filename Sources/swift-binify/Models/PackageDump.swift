@@ -35,6 +35,28 @@ struct DependencyDump: Codable {
 
 struct SourceControlDump: Codable {
     let identity: String
+    let location: LocationDump?
+    let requirement: RequirementDump?
+}
+
+struct LocationDump: Codable {
+    let remote: [RemoteDump]?
+}
+
+struct RemoteDump: Codable {
+    let urlString: String?
+}
+
+struct RequirementDump: Codable {
+    let range: [RangeDump]?
+    let exact: [String]?
+    let branch: [String]?
+    let revision: [String]?
+}
+
+struct RangeDump: Codable {
+    let lowerBound: String?
+    let upperBound: String?
 }
 
 struct ToolsVersionDump: Codable {

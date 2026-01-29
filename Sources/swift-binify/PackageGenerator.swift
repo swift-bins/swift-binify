@@ -3,19 +3,39 @@ import Foundation
 /// Generates a Package.swift that wraps built xcframeworks
 struct PackageGenerator {
 
+    /// Configuration for release mode (URL-based binary targets)
+    struct ReleaseConfig {
+        let urlBase: String  // e.g., "https://github.com/swift-bins/owner_repo/releases/download"
+        let tag: String      // e.g., "1.0.0"
+        let zippedFrameworks: [ZippedFramework]
+
+        /// Get checksum for a target name
+        func checksum(for targetName: String) -> String? {
+            zippedFrameworks.first { $0.name == targetName }?.checksum
+        }
+
+        /// Build full URL for a zipped framework
+        func url(for targetName: String) -> String {
+            "\(urlBase)/\(tag)/\(targetName).xcframework.zip"
+        }
+    }
+
     /// Generate a Package.swift for the built xcframeworks
     /// - Parameters:
     ///   - packageInfo: The analyzed package info
     ///   - builtProducts: Names of the successfully built targets/xcframeworks
     ///   - outputDir: Where to write the Package.swift
+    ///   - releaseConfig: Optional config for release mode (URL-based targets)
     func generate(
         packageInfo: PackageInfo,
         builtProducts: [String],
-        outputDir: URL
+        outputDir: URL,
+        releaseConfig: ReleaseConfig? = nil
     ) throws {
         let content = generatePackageSwift(
             packageInfo: packageInfo,
-            builtTargets: Set(builtProducts)
+            builtTargets: Set(builtProducts),
+            releaseConfig: releaseConfig
         )
 
         let packageSwiftURL = outputDir.appendingPathComponent("Package.swift")
@@ -26,7 +46,8 @@ struct PackageGenerator {
 
     private func generatePackageSwift(
         packageInfo: PackageInfo,
-        builtTargets: Set<String>
+        builtTargets: Set<String>,
+        releaseConfig: ReleaseConfig?
     ) -> String {
         var lines: [String] = []
 
@@ -34,8 +55,8 @@ struct PackageGenerator {
         appendPackageDeclaration(to: &lines, name: packageInfo.name)
         appendPlatforms(to: &lines, platformVersions: packageInfo.platformVersions)
         appendProducts(to: &lines, products: packageInfo.products, builtTargets: builtTargets)
-        appendDependencies(to: &lines, dependencies: packageInfo.dependencies)
-        appendTargets(to: &lines, builtTargets: builtTargets)
+        appendDependencies(to: &lines, dependencies: packageInfo.dependencies, releaseConfig: releaseConfig)
+        appendTargets(to: &lines, builtTargets: builtTargets, releaseConfig: releaseConfig)
         appendFooter(to: &lines)
 
         return lines.joined(separator: "\n")
@@ -87,26 +108,56 @@ struct PackageGenerator {
         lines.append("    ],")
     }
 
-    private func appendDependencies(to lines: inout [String], dependencies: [PackageInfo.Dependency]) {
+    private func appendDependencies(
+        to lines: inout [String],
+        dependencies: [PackageInfo.Dependency],
+        releaseConfig: ReleaseConfig?
+    ) {
         guard !dependencies.isEmpty else { return }
 
         lines.append("    dependencies: [")
         for (index, dep) in dependencies.enumerated() {
             let comma = index < dependencies.count - 1 ? "," : ""
-            lines.append("        .package(path: \"\(Constants.outputBasePath)/\(dep.identity)\")\(comma)")
+
+            if releaseConfig != nil,
+               let swiftBinsURL = dep.swiftBinsURL,
+               let requirement = dep.versionRequirement {
+                // Release mode: use swift-bins URL with version requirement
+                lines.append("        \(requirement.swiftDeclaration(url: swiftBinsURL))\(comma)")
+            } else {
+                // Local mode: use local path
+                lines.append("        .package(path: \"\(Constants.outputBasePath)/\(dep.identity)\")\(comma)")
+            }
         }
         lines.append("    ],")
     }
 
-    private func appendTargets(to lines: inout [String], builtTargets: Set<String>) {
+    private func appendTargets(
+        to lines: inout [String],
+        builtTargets: Set<String>,
+        releaseConfig: ReleaseConfig?
+    ) {
         lines.append("    targets: [")
         let sortedTargets = builtTargets.sorted()
         for (index, targetName) in sortedTargets.enumerated() {
             let comma = index < sortedTargets.count - 1 ? "," : ""
-            lines.append("        .binaryTarget(")
-            lines.append("            name: \"\(targetName)\",")
-            lines.append("            path: \"\(targetName).xcframework\"")
-            lines.append("        )\(comma)")
+
+            if let releaseConfig = releaseConfig,
+               let checksum = releaseConfig.checksum(for: targetName) {
+                // Release mode: URL-based binary target with checksum
+                let url = releaseConfig.url(for: targetName)
+                lines.append("        .binaryTarget(")
+                lines.append("            name: \"\(targetName)\",")
+                lines.append("            url: \"\(url)\",")
+                lines.append("            checksum: \"\(checksum)\"")
+                lines.append("        )\(comma)")
+            } else {
+                // Local mode: path-based binary target
+                lines.append("        .binaryTarget(")
+                lines.append("            name: \"\(targetName)\",")
+                lines.append("            path: \"\(targetName).xcframework\"")
+                lines.append("        )\(comma)")
+            }
         }
         lines.append("    ]")
     }

@@ -28,7 +28,28 @@ struct SwiftBinify: AsyncParsableCommand {
     @Option(name: .long, help: "Build configuration (debug/release)")
     var configuration: String = "release"
 
+    @Option(name: .long, help: "Output mode: 'local' for path-based targets, 'release' for URL-based")
+    var outputMode: OutputMode = .local
+
+    @Option(name: .long, help: "Base URL for release assets (required for release mode)")
+    var releaseUrlBase: String?
+
+    @Option(name: .long, help: "Version tag for release URLs (required for release mode)")
+    var tag: String?
+
     func run() async throws {
+        // Validate release mode parameters
+        if outputMode == .release {
+            guard let _ = releaseUrlBase else {
+                Console.error("--release-url-base is required for release mode")
+                throw ExitCode.failure
+            }
+            guard let _ = tag else {
+                Console.error("--tag is required for release mode")
+                throw ExitCode.failure
+            }
+        }
+
         let packageURL = resolvePackageURL()
         let packageIdentity = packageURL.lastPathComponent.lowercased()
 
@@ -118,9 +139,23 @@ struct SwiftBinify: AsyncParsableCommand {
 
         printBuildResults(succeeded: succeeded, failed: failed, results: results)
 
+        // Zip xcframeworks if in release mode
+        var zippedFrameworks: [ZippedFramework] = []
+        if outputMode == .release && !succeeded.isEmpty {
+            Console.step("Zipping xcframeworks")
+            let zipper = XCFrameworkZipper()
+            zippedFrameworks = try zipper.zipAll(in: outputDir, targetNames: succeeded)
+            Console.blank()
+        }
+
         // Generate Package.swift wrapper
         if !succeeded.isEmpty {
-            try generatePackageWrapper(packageInfo: packageInfo, succeeded: succeeded, outputDir: outputDir)
+            try generatePackageWrapper(
+                packageInfo: packageInfo,
+                succeeded: succeeded,
+                outputDir: outputDir,
+                zippedFrameworks: zippedFrameworks
+            )
         }
 
         try printFinalStatus(succeeded: succeeded, failed: failed, outputDir: outputDir)
@@ -142,14 +177,28 @@ struct SwiftBinify: AsyncParsableCommand {
     private func generatePackageWrapper(
         packageInfo: PackageInfo,
         succeeded: [String],
-        outputDir: URL
+        outputDir: URL,
+        zippedFrameworks: [ZippedFramework]
     ) throws {
         Console.generateStep("Generating Package.swift")
         let generator = PackageGenerator()
+
+        let releaseConfig: PackageGenerator.ReleaseConfig?
+        if outputMode == .release, let urlBase = releaseUrlBase, let version = tag {
+            releaseConfig = PackageGenerator.ReleaseConfig(
+                urlBase: urlBase,
+                tag: version,
+                zippedFrameworks: zippedFrameworks
+            )
+        } else {
+            releaseConfig = nil
+        }
+
         try generator.generate(
             packageInfo: packageInfo,
             builtProducts: succeeded,
-            outputDir: outputDir
+            outputDir: outputDir,
+            releaseConfig: releaseConfig
         )
         Console.success("\(outputDir.path)/Package.swift")
         Console.blank()

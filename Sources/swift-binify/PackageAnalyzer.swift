@@ -116,8 +116,31 @@ struct PackageAnalyzer {
 
     private func parseDependencies(from dump: PackageDump) -> [PackageInfo.Dependency] {
         (dump.dependencies ?? []).compactMap { dep -> PackageInfo.Dependency? in
-            guard let identity = dep.sourceControl?.first?.identity else { return nil }
-            return PackageInfo.Dependency(identity: identity)
+            guard let sourceControl = dep.sourceControl?.first else { return nil }
+            let identity = sourceControl.identity
+
+            // Extract URL
+            let url = sourceControl.location?.remote?.first?.urlString
+
+            // Extract version requirement
+            var versionRequirement: PackageInfo.Dependency.VersionRequirement?
+            if let requirement = sourceControl.requirement {
+                if let range = requirement.range?.first {
+                    versionRequirement = .range(from: range.lowerBound ?? "0.0.0", to: range.upperBound)
+                } else if let exact = requirement.exact?.first {
+                    versionRequirement = .exact(exact)
+                } else if let branch = requirement.branch?.first {
+                    versionRequirement = .branch(branch)
+                } else if let revision = requirement.revision?.first {
+                    versionRequirement = .revision(revision)
+                }
+            }
+
+            return PackageInfo.Dependency(
+                identity: identity,
+                url: url,
+                versionRequirement: versionRequirement
+            )
         }
     }
 

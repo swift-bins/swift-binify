@@ -88,6 +88,51 @@ struct PackageInfo {
 
     struct Dependency {
         let identity: String
+        let url: String?
+        let versionRequirement: VersionRequirement?
+
+        /// Version requirement for a dependency
+        enum VersionRequirement {
+            case range(from: String, to: String?)
+            case exact(String)
+            case branch(String)
+            case revision(String)
+
+            /// Convert to swift-bins URL dependency declaration
+            func swiftDeclaration(url: String) -> String {
+                switch self {
+                case .range(let from, _):
+                    return ".package(url: \"\(url)\", from: \"\(from)\")"
+                case .exact(let version):
+                    return ".package(url: \"\(url)\", exact: \"\(version)\")"
+                case .branch(let branch):
+                    return ".package(url: \"\(url)\", branch: \"\(branch)\")"
+                case .revision(let rev):
+                    return ".package(url: \"\(url)\", revision: \"\(rev)\")"
+                }
+            }
+        }
+
+        /// Derive swift-bins URL from original GitHub URL
+        /// e.g., https://github.com/onevcat/Kingfisher -> https://github.com/swift-bins/onevcat_Kingfisher
+        var swiftBinsURL: String? {
+            guard let url = url else { return nil }
+
+            // Parse owner/repo from GitHub URL
+            // Handles: https://github.com/owner/repo.git or https://github.com/owner/repo
+            let pattern = #"github\.com[/:]([^/]+)/([^/.]+)"#
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)),
+                  let ownerRange = Range(match.range(at: 1), in: url),
+                  let repoRange = Range(match.range(at: 2), in: url) else {
+                return nil
+            }
+
+            let owner = String(url[ownerRange])
+            let repo = String(url[repoRange])
+
+            return "https://github.com/swift-bins/\(owner)_\(repo)"
+        }
     }
 
     /// A target that should be built (has an available scheme)
