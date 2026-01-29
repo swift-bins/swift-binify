@@ -1,0 +1,297 @@
+# GitHub Action workflow for building Swift packages as binary xcframeworks
+# Copy this file to .github/workflows/build-binary.yml in your binary repo
+
+name: Build Binary Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Source repo tag to build (leave empty for latest)'
+        required: false
+        type: string
+  schedule:
+    - cron: '0 2 * * *'  # 2 AM UTC daily
+
+permissions:
+  contents: write
+  workflows: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout binary repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select latest Xcode
+        run: |
+          # Find and select the latest Xcode version
+          LATEST_XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$LATEST_XCODE" ]; then
+            sudo xcode-select -s "$LATEST_XCODE"
+            echo "Selected Xcode: $LATEST_XCODE"
+            xcodebuild -version
+          fi
+
+      - name: Read config
+        id: config
+        run: |
+          if [ ! -f binify-config.json ]; then
+            echo "Error: binify-config.json not found"
+            exit 1
+          fi
+
+          SOURCE_REPO=$(jq -r '.source_repo' binify-config.json)
+          echo "source_repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
+
+          # Read requires_owner_prefix (default to true if not specified)
+          REQUIRES_OWNER_PREFIX=$(jq -r '.requires_owner_prefix // true' binify-config.json)
+          echo "requires_owner_prefix=$REQUIRES_OWNER_PREFIX" >> $GITHUB_OUTPUT
+
+          # Parse owner and name from URL
+          # Handles: https://github.com/owner/repo.git or https://github.com/owner/repo
+          OWNER=$(echo "$SOURCE_REPO" | sed -E 's#.*github\.com[/:]([^/]+)/.*#\1#')
+          NAME=$(echo "$SOURCE_REPO" | sed -E 's#.*github\.com[/:][^/]+/([^/.]+).*#\1#')
+
+          echo "source_owner=$OWNER" >> $GITHUB_OUTPUT
+          echo "source_name=$NAME" >> $GITHUB_OUTPUT
+          echo "Source repo: $SOURCE_REPO"
+          echo "Owner: $OWNER, Name: $NAME"
+          echo "Requires owner prefix: $REQUIRES_OWNER_PREFIX"
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
+      - name: Clone swift-binify tool
+        run: |
+          git clone --depth 1 https://github.com/swift-bins/swift-binify.git /tmp/swift-binify
+
+      - name: Self-update workflow
+        run: |
+          mkdir -p .github/workflows
+          cp /tmp/swift-binify/example/build-binary.yml .github/workflows/build-binary.yml
+          echo "Workflow updated from swift-binify"
+
+      - name: Determine tag to build
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            # Manual trigger with specific tag
+            TAG="$INPUT_TAG"
+            echo "Using manually specified tag: $TAG"
+          else
+            # Nightly: get latest semver tag from source repo
+            # Extract owner/repo for API call
+            REPO_PATH=$(echo "$SOURCE_REPO" | sed -E 's#.*github\.com[/:](.+)(\.git)?$#\1#' | sed 's/\.git$//')
+
+            echo "Fetching tags from: $REPO_PATH"
+
+            # Get all tags and find latest stable semver tag (ignore rc, beta, alpha, etc.)
+            # Only match tags like: 1.0, 1.0.0, v1.0, v1.0.0
+            TAG=$(gh api "repos/$REPO_PATH/tags" --paginate -q '.[].name' | \
+              grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
+              sort -V | \
+              tail -1)
+
+            if [ -z "$TAG" ]; then
+              echo "No stable semver tags found in source repo (ignoring rc/beta/alpha)"
+              exit 1
+            fi
+            echo "Latest stable tag from source: $TAG"
+          fi
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Check if release already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG already exists, skipping build"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release $TAG does not exist, proceeding with build"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Clone source repo at tag
+        if: steps.check.outputs.skip != 'true'
+        env:
+          SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          git clone --depth 1 --branch "$TAG" "$SOURCE_REPO" /tmp/source
+          echo "Cloned $SOURCE_REPO at tag $TAG"
+
+      - name: Build swift-binify tool
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          cd /tmp/swift-binify
+          swift build -c release
+          echo "swift-binify built successfully"
+
+      - name: Run swift-binify
+        if: steps.check.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          RELEASE_URL_BASE="https://github.com/${{ github.repository }}/releases/download"
+
+          /tmp/swift-binify/.build/release/swift-binify /tmp/source \
+            --output-mode release \
+            --release-url-base "$RELEASE_URL_BASE" \
+            --tag "$TAG"
+
+          # Get the package identity (lowercase package name)
+          PACKAGE_NAME=$(basename /tmp/source | tr '[:upper:]' '[:lower:]')
+          OUTPUT_DIR="/tmp/swift-binify-dylibs/$PACKAGE_NAME"
+
+          echo "output_dir=$OUTPUT_DIR" >> $GITHUB_ENV
+          echo "Build output: $OUTPUT_DIR"
+
+      - name: Copy build artifacts
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          # Copy Package.swift
+          cp "$output_dir/Package.swift" ./Package.swift
+
+          # Copy zipped xcframeworks
+          cp "$output_dir"/*.xcframework.zip . 2>/dev/null || true
+
+          echo "Copied build artifacts"
+          ls -la *.xcframework.zip 2>/dev/null || echo "No zip files found"
+
+      - name: Copy LICENSE from source
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          # Copy any LICENSE file (LICENSE, LICENSE.md, LICENSE.txt, etc.)
+          cp /tmp/source/LICENSE* . 2>/dev/null || echo "No LICENSE file found in source"
+          ls -la LICENSE* 2>/dev/null || true
+
+      - name: Generate README
+        if: steps.check.outputs.skip != 'true'
+        env:
+          SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
+          SOURCE_OWNER: ${{ steps.config.outputs.source_owner }}
+          SOURCE_NAME: ${{ steps.config.outputs.source_name }}
+          REQUIRES_OWNER_PREFIX: ${{ steps.config.outputs.requires_owner_prefix }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          # Remove .git suffix if present
+          CLEAN_URL=$(echo "$SOURCE_REPO" | sed 's/\.git$//')
+
+          # Determine package identity based on config
+          if [ "$REQUIRES_OWNER_PREFIX" = "true" ]; then
+            PACKAGE_IDENTITY="${SOURCE_OWNER}_${SOURCE_NAME}"
+          else
+            PACKAGE_IDENTITY="${SOURCE_NAME}"
+          fi
+
+          # Start README
+          cat > README.md << EOF
+          # ${SOURCE_NAME} (Binary)
+
+          Pre-built binary xcframeworks for [${SOURCE_NAME}](${CLEAN_URL}).
+
+          ## Usage
+
+          Update your package dependency in \`Package.swift\`:
+
+          \`\`\`swift
+          // Before (builds from source)
+          .package(url: "${CLEAN_URL}", from: "${TAG}")
+
+          // After (uses pre-built binaries)
+          .package(url: "https://github.com/${{ github.repository }}", from: "${TAG}")
+          \`\`\`
+          EOF
+
+          # Add package name change section only if owner prefix is required
+          if [ "$REQUIRES_OWNER_PREFIX" = "true" ]; then
+            cat >> README.md << EOF
+
+          **Note:** You also need to update your target dependency (package name changes):
+
+          \`\`\`swift
+          // Before
+          .product(name: "${SOURCE_NAME}", package: "${SOURCE_NAME}")
+
+          // After
+          .product(name: "${SOURCE_NAME}", package: "${PACKAGE_IDENTITY}")
+          \`\`\`
+          EOF
+          fi
+
+          # Add footer
+          cat >> README.md << EOF
+
+          ## License
+
+          See [LICENSE](LICENSE) - sourced from the original repository.
+
+          ## Original Repository
+
+          For documentation and source code, visit the original repo:
+          - README: ${CLEAN_URL}#readme
+          - Source: ${CLEAN_URL}
+          EOF
+
+          echo "Generated README.md"
+
+      - name: Commit and push changes
+        if: steps.check.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add specific files (NOT the zip files - those go to releases only)
+          git add Package.swift README.md .github/workflows/build-binary.yml
+          git add LICENSE* 2>/dev/null || true
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Build $TAG"
+          fi
+
+          # Create/update tag to point to this commit and force push it
+          git tag -f "$TAG"
+          git push origin HEAD
+          git push origin "$TAG" --force
+
+          echo "Changes committed and tagged"
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
+          SOURCE_NAME: ${{ steps.config.outputs.source_name }}
+        run: |
+          # Build link to source release
+          CLEAN_URL=$(echo "$SOURCE_REPO" | sed 's/\.git$//')
+          SOURCE_RELEASE_URL="${CLEAN_URL}/releases/tag/${TAG}"
+
+          # Create release with zipped xcframeworks (tag already exists from previous step)
+          RELEASE_NOTES=$(printf "Binary xcframeworks for %s %s\n\nBuilt from source: %s" "$SOURCE_NAME" "$TAG" "$SOURCE_RELEASE_URL")
+          gh release create "$TAG" \
+            --title "$SOURCE_NAME $TAG" \
+            --notes "$RELEASE_NOTES" \
+            *.xcframework.zip
+
+          echo "Created release $TAG"
