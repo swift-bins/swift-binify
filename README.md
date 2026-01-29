@@ -36,24 +36,7 @@ Replace your source dependency with the binary equivalent:
 .package(url: "https://github.com/onevcat/Kingfisher", from: "7.12.0")
 
 // After (uses pre-built binaries)
-.package(url: "https://github.com/swift-bins/onevcat_Kingfisher", from: "7.12.0")
-```
-
-## Setting up a new binary repo
-
-See the [example directory](example/) for setup instructions and template files.
-
-## Local usage
-
-```bash
-# Build a package locally (for development/testing)
-swift-binify /path/to/package
-
-# Build for release (generates URL-based Package.swift)
-swift-binify /path/to/package \
-    --output-mode release \
-    --release-url-base "https://github.com/swift-bins/owner_repo/releases/download" \
-    --tag "1.0.0"
+.package(url: "https://github.com/swift-bins/Kingfisher", from: "7.12.0") // Or in some cases `onevcat_Kingfisher`. Exact instructions are available in each repo.
 ```
 
 ## License
