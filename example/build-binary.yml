@@ -203,21 +203,6 @@ jobs:
 
           echo "Generated README.md"
 
-      - name: Create GitHub Release
-        if: steps.check.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          SOURCE_NAME: ${{ steps.config.outputs.source_name }}
-        run: |
-          # Create release with zipped xcframeworks
-          gh release create "$TAG" \
-            --title "$SOURCE_NAME $TAG" \
-            --notes "Binary xcframeworks for $SOURCE_NAME $TAG" \
-            *.xcframework.zip
-
-          echo "Created release $TAG"
-
       - name: Commit and push changes
         if: steps.check.outputs.skip != 'true'
         env:
@@ -226,15 +211,34 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Add all changes (Package.swift, README, LICENSE, workflow)
-          git add -A
+          # Add specific files (NOT the zip files - those go to releases only)
+          git add Package.swift README.md .github/workflows/build-binary.yml
+          git add LICENSE* 2>/dev/null || true
 
           # Check if there are changes to commit
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
             git commit -m "Build $TAG"
-            git push origin HEAD
           fi
 
-          echo "Changes committed and pushed"
+          # Create and push tag
+          git tag "$TAG"
+          git push origin HEAD --tags
+
+          echo "Changes committed and tagged"
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          SOURCE_NAME: ${{ steps.config.outputs.source_name }}
+        run: |
+          # Create release with zipped xcframeworks (tag already exists from previous step)
+          gh release create "$TAG" \
+            --title "$SOURCE_NAME $TAG" \
+            --notes "Binary xcframeworks for $SOURCE_NAME $TAG" \
+            *.xcframework.zip
+
+          echo "Created release $TAG"
