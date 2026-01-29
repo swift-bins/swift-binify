@@ -2,6 +2,9 @@
 
 A tool that builds Swift packages as pre-compiled binary xcframeworks for faster build times.
 
+> ![IMPORTANT]
+> This is still a proof of concept, but you’re welcome to use the prebuilt packages. They’re easy to get started with and easy to detach from later.
+
 ## What it does
 
 swift-binify takes a Swift package and produces:
@@ -56,3 +59,7 @@ swift-binify /path/to/package \
 ## License
 
 MIT
+
+## Vibe Check
+
+Yes, this is still a POC

@@ -21,6 +21,9 @@ struct ReadmeGenerator {
 
         Pre-built binary xcframeworks for [\(config.packageName)](\(cleanSourceURL)).
 
+        > ![TIP]
+        > swift-bins is currently a proof of concept, but you’re welcome to use this prebuilt package. It’s easy to get started with and easy to detach from later.
+
         ## Usage
 
         Replace your existing source dependency in `Package.swift`:
@@ -42,6 +45,10 @@ struct ReadmeGenerator {
         For documentation and source code, visit the original repo:
         - README: \(cleanSourceURL)#readme
         - Source: \(cleanSourceURL)
+
+        ## More Information
+
+        For more information, see the [swift-binify](https://github.com/swift-bins/swift-binify) repository.
         """
     }
 

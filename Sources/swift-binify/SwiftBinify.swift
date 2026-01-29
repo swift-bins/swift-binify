@@ -51,7 +51,7 @@ struct SwiftBinify: AsyncParsableCommand {
         }
 
         let packageURL = resolvePackageURL()
-        let packageIdentity = packageURL.lastPathComponent.lowercased()
+        let packageIdentity = packageURL.lastPathComponent
 
         printHeader(packageURL: packageURL)
 
