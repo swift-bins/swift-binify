@@ -36,6 +36,10 @@ jobs:
           SOURCE_REPO=$(jq -r '.source_repo' binify-config.json)
           echo "source_repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
 
+          # Read requires_owner_prefix (default to true if not specified)
+          REQUIRES_OWNER_PREFIX=$(jq -r '.requires_owner_prefix // true' binify-config.json)
+          echo "requires_owner_prefix=$REQUIRES_OWNER_PREFIX" >> $GITHUB_OUTPUT
+
           # Parse owner and name from URL
           # Handles: https://github.com/owner/repo.git or https://github.com/owner/repo
           OWNER=$(echo "$SOURCE_REPO" | sed -E 's#.*github\.com[/:]([^/]+)/.*#\1#')
@@ -45,6 +49,7 @@ jobs:
           echo "source_name=$NAME" >> $GITHUB_OUTPUT
           echo "Source repo: $SOURCE_REPO"
           echo "Owner: $OWNER, Name: $NAME"
+          echo "Requires owner prefix: $REQUIRES_OWNER_PREFIX"
 
       - name: Setup Swift
         uses: swift-actions/setup-swift@v2
@@ -168,11 +173,20 @@ jobs:
           SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
           SOURCE_OWNER: ${{ steps.config.outputs.source_owner }}
           SOURCE_NAME: ${{ steps.config.outputs.source_name }}
+          REQUIRES_OWNER_PREFIX: ${{ steps.config.outputs.requires_owner_prefix }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           # Remove .git suffix if present
           CLEAN_URL=$(echo "$SOURCE_REPO" | sed 's/\.git$//')
 
+          # Determine package identity based on config
+          if [ "$REQUIRES_OWNER_PREFIX" = "true" ]; then
+            PACKAGE_IDENTITY="${SOURCE_OWNER}_${SOURCE_NAME}"
+          else
+            PACKAGE_IDENTITY="${SOURCE_NAME}"
+          fi
+
+          # Start README
           cat > README.md << EOF
           # ${SOURCE_NAME} (Binary)
 
@@ -180,7 +194,7 @@ jobs:
 
           ## Usage
 
-          **1. Update your package dependency:**
+          Update your package dependency in \`Package.swift\`:
 
           \`\`\`swift
           // Before (builds from source)
@@ -189,16 +203,26 @@ jobs:
           // After (uses pre-built binaries)
           .package(url: "https://github.com/${{ github.repository }}", from: "${TAG}")
           \`\`\`
+          EOF
 
-          **2. Update your target dependency** (package name changes):
+          # Add package name change section only if owner prefix is required
+          if [ "$REQUIRES_OWNER_PREFIX" = "true" ]; then
+            cat >> README.md << EOF
+
+          **Note:** You also need to update your target dependency (package name changes):
 
           \`\`\`swift
           // Before
           .product(name: "${SOURCE_NAME}", package: "${SOURCE_NAME}")
 
           // After
-          .product(name: "${SOURCE_NAME}", package: "${SOURCE_OWNER}_${SOURCE_NAME}")
+          .product(name: "${SOURCE_NAME}", package: "${PACKAGE_IDENTITY}")
           \`\`\`
+          EOF
+          fi
+
+          # Add footer
+          cat >> README.md << EOF
 
           ## License
 
@@ -244,12 +268,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
+          SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
           SOURCE_NAME: ${{ steps.config.outputs.source_name }}
         run: |
+          # Build link to source release
+          CLEAN_URL=$(echo "$SOURCE_REPO" | sed 's/\.git$//')
+          SOURCE_RELEASE_URL="${CLEAN_URL}/releases/tag/${TAG}"
+
           # Create release with zipped xcframeworks (tag already exists from previous step)
+          RELEASE_NOTES=$(printf "Binary xcframeworks for %s %s\n\nBuilt from source: %s" "$SOURCE_NAME" "$TAG" "$SOURCE_RELEASE_URL")
           gh release create "$TAG" \
             --title "$SOURCE_NAME $TAG" \
-            --notes "Binary xcframeworks for $SOURCE_NAME $TAG" \
+            --notes "$RELEASE_NOTES" \
             *.xcframework.zip
 
           echo "Created release $TAG"

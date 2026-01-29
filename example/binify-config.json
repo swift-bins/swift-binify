@@ -1,3 +1,4 @@
 {
-    "source_repo": "https://github.com/onevcat/Kingfisher.git"
+    "source_repo": "https://github.com/onevcat/Kingfisher.git",
+    "requires_owner_prefix": true
 }

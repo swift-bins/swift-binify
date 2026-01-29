@@ -8,10 +8,18 @@ For each Swift package you want to mirror as binaries:
 
 ### 1. Create the binary repo
 
-Create a new repo at `github.com/swift-bins/{owner}_{name}`
+Create a new repo. You have two naming options:
 
-For example, to mirror `https://github.com/onevcat/Kingfisher`:
-- Create repo: `github.com/swift-bins/onevcat_Kingfisher`
+**Option A: With owner prefix (default)**
+- Repo: `github.com/swift-bins/onevcat_Kingfisher`
+- Set `requires_owner_prefix: true` in config
+- Users must update their `.product(name:package:)` references
+
+**Option B: Without owner prefix (simpler for users)**
+- Repo: `github.com/swift-bins/Kingfisher`
+- Set `requires_owner_prefix: false` in config
+- Users only update the package URL, no other changes needed
+- Only works if the package name is unique across all your binary repos
 
 ### 2. Copy configuration
 
@@ -19,9 +27,21 @@ Copy `binify-config.json` to the root of your new repo and edit it:
 
 ```json
 {
-    "source_repo": "https://github.com/onevcat/Kingfisher.git"
+    "source_repo": "https://github.com/onevcat/Kingfisher.git",
+    "requires_owner_prefix": true
 }
 ```
+
+#### Configuration options
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `source_repo` | Yes | - | URL of the source repo to build |
+| `requires_owner_prefix` | No | `true` | If `true`, repo is named `swift-bins/owner_repo`. If `false`, repo is named `swift-bins/repo` (simpler, but package name must be unique) |
+
+When `requires_owner_prefix` is `false`:
+- Name your repo just `swift-bins/Kingfisher` instead of `swift-bins/onevcat_Kingfisher`
+- Users don't need to change their `.product(name:package:)` references
 
 ### 3. Copy the workflow
 

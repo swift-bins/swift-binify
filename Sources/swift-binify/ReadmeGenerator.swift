@@ -5,20 +5,20 @@ struct ReadmeGenerator {
 
     /// Configuration for README generation
     struct Config {
-        let sourceRepoURL: String    // Original source repo URL
-        let binaryRepoURL: String    // swift-bins binary repo URL
-        let packageName: String      // Package name
-        let sourceOwner: String      // Original repo owner (e.g., "onevcat")
-        let tag: String              // Version tag
+        let sourceRepoURL: String       // Original source repo URL
+        let binaryRepoURL: String       // swift-bins binary repo URL
+        let packageName: String         // Package name
+        let sourceOwner: String         // Original repo owner (e.g., "onevcat")
+        let tag: String                 // Version tag
+        let requiresOwnerPrefix: Bool   // Whether binary repo uses owner_name format
     }
 
     /// Generate README content
     func generate(config: Config) -> String {
         // Clean URLs (remove .git suffix)
         let cleanSourceURL = config.sourceRepoURL.replacingOccurrences(of: ".git", with: "")
-        let binaryPackageIdentity = "\(config.sourceOwner)_\(config.packageName)"
 
-        return """
+        var readme = """
         # \(config.packageName) (Binary)
 
         Pre-built binary xcframeworks for [\(config.packageName)](\(cleanSourceURL)).
@@ -28,7 +28,7 @@ struct ReadmeGenerator {
 
         ## Usage
 
-        **1. Update your package dependency:**
+        Update your package dependency in `Package.swift`:
 
         ```swift
         // Before (builds from source)
@@ -37,16 +37,28 @@ struct ReadmeGenerator {
         // After (uses pre-built binaries)
         .package(url: "\(config.binaryRepoURL)", from: "\(config.tag)")
         ```
+        """
 
-        **2. Update your target dependency** (package name changes):
+        // Only add package name change section if owner prefix is required
+        if config.requiresOwnerPrefix {
+            let binaryPackageIdentity = "\(config.sourceOwner)_\(config.packageName)"
+            readme += """
 
-        ```swift
-        // Before
-        .product(name: "\(config.packageName)", package: "\(config.packageName)")
 
-        // After
-        .product(name: "\(config.packageName)", package: "\(binaryPackageIdentity)")
-        ```
+            **Note:** You also need to update your target dependency (package name changes):
+
+            ```swift
+            // Before
+            .product(name: "\(config.packageName)", package: "\(config.packageName)")
+
+            // After
+            .product(name: "\(config.packageName)", package: "\(binaryPackageIdentity)")
+            ```
+            """
+        }
+
+        readme += """
+
 
         ## License
 
@@ -62,6 +74,8 @@ struct ReadmeGenerator {
 
         For more information, see the [swift-binify](https://github.com/swift-bins/swift-binify) repository.
         """
+
+        return readme
     }
 
     /// Write README to output directory
