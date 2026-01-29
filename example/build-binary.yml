@@ -94,17 +94,18 @@ jobs:
 
             echo "Fetching tags from: $REPO_PATH"
 
-            # Get all tags and find latest semver tag
+            # Get all tags and find latest stable semver tag (ignore rc, beta, alpha, etc.)
+            # Only match tags like: 1.0, 1.0.0, v1.0, v1.0.0
             TAG=$(gh api "repos/$REPO_PATH/tags" --paginate -q '.[].name' | \
-              grep -E '^v?[0-9]+\.[0-9]+' | \
+              grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
               sort -V | \
               tail -1)
 
             if [ -z "$TAG" ]; then
-              echo "No semver tags found in source repo"
+              echo "No stable semver tags found in source repo (ignoring rc/beta/alpha)"
               exit 1
             fi
-            echo "Latest tag from source: $TAG"
+            echo "Latest stable tag from source: $TAG"
           fi
 
           echo "tag=$TAG" >> $GITHUB_OUTPUT
