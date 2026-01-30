@@ -50,7 +50,8 @@ jobs:
           echo "source_repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
 
           # Read requires_owner_prefix (default to true if not specified)
-          REQUIRES_OWNER_PREFIX=$(jq -r '.requires_owner_prefix // true' binify-config.json)
+          # Note: can't use // operator as it treats false as falsy
+          REQUIRES_OWNER_PREFIX=$(jq -r 'if has("requires_owner_prefix") then .requires_owner_prefix else true end' binify-config.json)
           echo "requires_owner_prefix=$REQUIRES_OWNER_PREFIX" >> $GITHUB_OUTPUT
 
           # Parse owner and name from URL
