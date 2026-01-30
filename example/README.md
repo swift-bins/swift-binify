@@ -51,7 +51,20 @@ Copy `build-binary.yml` to `.github/workflows/build-binary.yml` in your repo.
 
 Make sure GitHub Actions are enabled for your repository.
 
-### 5. Trigger the first build
+### 5. (Optional) Set up PAT for self-updating workflow
+
+The workflow can automatically update itself from swift-binify. This requires a Personal Access Token (PAT) because `GITHUB_TOKEN` cannot modify workflow files.
+
+**To enable self-updating:**
+1. In each binary repo, go to **Settings → Secrets and variables → Actions**
+2. Click "New repository secret"
+   - **Name**: `WORKFLOW_TOKEN`
+   - **Secret**: Paste the swift-bins PAT
+3. Click "Add secret"
+
+If you skip this step, the workflow will still work but won't self-update.
+
+### 6. Trigger the first build
 
 Either:
 - Wait for the nightly run (2 AM UTC)
@@ -61,7 +74,7 @@ Either:
 
 The workflow will:
 1. Clone this tool (swift-binify) to get the latest version
-2. Self-update its own workflow file from the example directory
+2. Self-update its own workflow file (if `WORKFLOW_TOKEN` secret is set)
 3. Fetch tags from the source repo
 4. Build xcframeworks using swift-binify
 5. Create a GitHub Release with zipped xcframeworks
@@ -69,4 +82,6 @@ The workflow will:
 
 ## Self-updating
 
-After the first run, the workflow automatically updates itself from this tool's example directory on each subsequent run. This means improvements to the workflow propagate to all binary repos automatically.
+If you set up the `WORKFLOW_TOKEN` secret, the workflow automatically updates itself from this tool's example directory on each run. This means improvements propagate to all binary repos automatically.
+
+Without the PAT, you'll need to manually copy updated workflows from swift-binify.
