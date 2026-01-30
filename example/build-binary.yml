@@ -28,16 +28,6 @@ jobs:
           # If WORKFLOW_TOKEN secret is not set, falls back to default token (no self-update)
           token: ${{ secrets.WORKFLOW_TOKEN || github.token }}
 
-      - name: Select latest Xcode
-        run: |
-          # Find and select the latest Xcode version
-          LATEST_XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
-          if [ -n "$LATEST_XCODE" ]; then
-            sudo xcode-select -s "$LATEST_XCODE"
-            echo "Selected Xcode: $LATEST_XCODE"
-            xcodebuild -version
-          fi
-
       - name: Read config
         id: config
         run: |
@@ -64,21 +54,6 @@ jobs:
           echo "Source repo: $SOURCE_REPO"
           echo "Owner: $OWNER, Name: $NAME"
           echo "Requires owner prefix: $REQUIRES_OWNER_PREFIX"
-
-      - name: Setup Swift
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.2"
-
-      - name: Clone swift-binify tool
-        run: |
-          git clone --depth 1 https://github.com/swift-bins/swift-binify.git /tmp/swift-binify
-
-      - name: Self-update workflow
-        run: |
-          mkdir -p .github/workflows
-          cp /tmp/swift-binify/example/build-binary.yml .github/workflows/build-binary.yml
-          echo "Workflow updated from swift-binify"
 
       - name: Determine tag to build
         id: tag
@@ -121,15 +96,72 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           if gh release view "$TAG" > /dev/null 2>&1; then
-            echo "Release $TAG already exists, skipping build"
-            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "::notice::Release $TAG already exists - will only update workflow file"
+            echo "skip_build=true" >> $GITHUB_OUTPUT
           else
-            echo "Release $TAG does not exist, proceeding with build"
-            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Release $TAG does not exist - will build"
+            echo "skip_build=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Clone swift-binify tool
+        run: |
+          git clone --depth 1 https://github.com/swift-bins/swift-binify.git /tmp/swift-binify
+          cd /tmp/swift-binify
+          COMMIT=$(git rev-parse --short HEAD)
+          COMMIT_FULL=$(git rev-parse HEAD)
+          echo "::notice::Using swift-binify commit: $COMMIT (https://github.com/swift-bins/swift-binify/commit/$COMMIT_FULL)"
+          echo "swift_binify_commit=$COMMIT" >> $GITHUB_OUTPUT
+
+      - name: Self-update workflow
+        id: workflow_update
+        run: |
+          mkdir -p .github/workflows
+
+          # Check if workflow file differs
+          if ! diff -q /tmp/swift-binify/example/build-binary.yml .github/workflows/build-binary.yml > /dev/null 2>&1; then
+            cp /tmp/swift-binify/example/build-binary.yml .github/workflows/build-binary.yml
+            echo "Workflow file updated from swift-binify"
+            echo "workflow_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "Workflow file already up to date"
+            echo "workflow_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit workflow update
+        if: steps.workflow_update.outputs.workflow_changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add .github/workflows/build-binary.yml
+
+          if ! git diff --staged --quiet; then
+            git commit -m "Update workflow from swift-binify"
+            git push origin HEAD
+            echo "Workflow update committed and pushed"
+          fi
+
+      # === Build steps (skipped if release already exists) ===
+
+      - name: Select latest Xcode
+        if: steps.check.outputs.skip_build != 'true'
+        run: |
+          # Find and select the latest Xcode version
+          LATEST_XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$LATEST_XCODE" ]; then
+            sudo xcode-select -s "$LATEST_XCODE"
+            echo "Selected Xcode: $LATEST_XCODE"
+            xcodebuild -version
+          fi
+
+      - name: Setup Swift
+        if: steps.check.outputs.skip_build != 'true'
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
       - name: Clone source repo at tag
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip_build != 'true'
         env:
           SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
           TAG: ${{ steps.tag.outputs.tag }}
@@ -138,14 +170,14 @@ jobs:
           echo "Cloned $SOURCE_REPO at tag $TAG"
 
       - name: Build swift-binify tool
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip_build != 'true'
         run: |
           cd /tmp/swift-binify
           swift build -c release
           echo "swift-binify built successfully"
 
       - name: Run swift-binify
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip_build != 'true'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
           SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
@@ -176,7 +208,7 @@ jobs:
           echo "Build output: $OUTPUT_DIR"
 
       - name: Copy build artifacts
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip_build != 'true'
         run: |
           # Copy Package.swift and README.md
           cp "$output_dir/Package.swift" ./Package.swift
@@ -189,14 +221,14 @@ jobs:
           ls -la *.xcframework.zip 2>/dev/null || echo "No zip files found"
 
       - name: Copy LICENSE from source
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip_build != 'true'
         run: |
           # Copy any LICENSE file (LICENSE, LICENSE.md, LICENSE.txt, etc.)
           cp /tmp/source/LICENSE* . 2>/dev/null || echo "No LICENSE file found in source"
           ls -la LICENSE* 2>/dev/null || true
 
-      - name: Commit and push changes
-        if: steps.check.outputs.skip != 'true'
+      - name: Commit and tag build
+        if: steps.check.outputs.skip_build != 'true'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
@@ -222,7 +254,7 @@ jobs:
           echo "Changes committed and tagged"
 
       - name: Create GitHub Release
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip_build != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
