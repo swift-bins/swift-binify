@@ -37,6 +37,15 @@ struct SwiftBinify: AsyncParsableCommand {
     @Option(name: .long, help: "Version tag for release URLs (required for release mode)")
     var tag: String?
 
+    @Option(name: .long, help: "Source repo URL for README generation (required for release mode)")
+    var sourceRepo: String?
+
+    @Option(name: .long, help: "Binary repo URL for README generation (required for release mode)")
+    var binaryRepo: String?
+
+    @Flag(name: .long, help: "Whether binary repo uses owner_name format (affects README)")
+    var requiresOwnerPrefix: Bool = false
+
     func run() async throws {
         // Validate release mode parameters
         if outputMode == .release {
@@ -46,6 +55,14 @@ struct SwiftBinify: AsyncParsableCommand {
             }
             guard let _ = tag else {
                 Console.error("--tag is required for release mode")
+                throw ExitCode.failure
+            }
+            guard let _ = sourceRepo else {
+                Console.error("--source-repo is required for release mode")
+                throw ExitCode.failure
+            }
+            guard let _ = binaryRepo else {
+                Console.error("--binary-repo is required for release mode")
                 throw ExitCode.failure
             }
         }
@@ -158,6 +175,11 @@ struct SwiftBinify: AsyncParsableCommand {
             )
         }
 
+        // Generate README.md in release mode
+        if outputMode == .release, !succeeded.isEmpty {
+            try generateReadme(packageInfo: packageInfo, outputDir: outputDir)
+        }
+
         try printFinalStatus(succeeded: succeeded, failed: failed, outputDir: outputDir)
     }
 
@@ -202,6 +224,43 @@ struct SwiftBinify: AsyncParsableCommand {
         )
         Console.success("\(outputDir.path)/Package.swift")
         Console.blank()
+    }
+
+    private func generateReadme(packageInfo: PackageInfo, outputDir: URL) throws {
+        guard let sourceRepoURL = sourceRepo,
+              let binaryRepoURL = binaryRepo,
+              let version = tag else {
+            return
+        }
+
+        // Parse owner from source repo URL
+        let sourceOwner = parseOwner(from: sourceRepoURL) ?? "unknown"
+
+        Console.generateStep("Generating README.md")
+        let generator = ReadmeGenerator()
+        let config = ReadmeGenerator.Config(
+            sourceRepoURL: sourceRepoURL,
+            binaryRepoURL: binaryRepoURL,
+            packageName: packageInfo.name,
+            sourceOwner: sourceOwner,
+            tag: version,
+            requiresOwnerPrefix: requiresOwnerPrefix
+        )
+
+        try generator.write(config: config, to: outputDir)
+        Console.success("\(outputDir.path)/README.md")
+        Console.blank()
+    }
+
+    private func parseOwner(from url: String) -> String? {
+        // Parse owner from GitHub URL: https://github.com/owner/repo
+        let pattern = #"github\.com[/:]([^/]+)/"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)),
+              let ownerRange = Range(match.range(at: 1), in: url) else {
+            return nil
+        }
+        return String(url[ownerRange])
     }
 
     private func printFinalStatus(succeeded: [String], failed: [String], outputDir: URL) throws {
