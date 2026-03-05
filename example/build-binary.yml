@@ -73,17 +73,20 @@ jobs:
             echo "Using manually specified tag: $TAG"
           else
             # Nightly: get latest semver tag from source repo
-            # Extract owner/repo for API call
-            REPO_PATH=$(echo "$SOURCE_REPO" | sed -E 's#.*github\.com[/:](.+)(\.git)?$#\1#' | sed 's/\.git$//')
-
-            echo "Fetching tags from: $REPO_PATH"
+            echo "Fetching tags from: $SOURCE_REPO"
 
             # Get all tags and find latest stable semver tag (ignore rc, beta, alpha, etc.)
             # Only match tags like: 1.0, 1.0.0, v1.0, v1.0.0
-            TAG=$(gh api "repos/$REPO_PATH/tags" --paginate -q '.[].name' | \
+            # Uses git ls-remote instead of GitHub API to avoid pagination issues with large repos
+            # Uses decorated sort to strip v prefix for comparison while preserving the original tag name
+            TAG=$(git ls-remote --tags "$SOURCE_REPO" | \
+              sed -E 's#.*/tags/##' | \
+              grep -v '\^{}' | \
               grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
+              awk '{orig=$0; sub(/^v/,""); print $0, orig}' | \
               sort -V | \
-              tail -1)
+              tail -1 | \
+              awk '{print $2}')
 
             if [ -z "$TAG" ]; then
               echo "No stable semver tags found in source repo (ignoring rc/beta/alpha)"
