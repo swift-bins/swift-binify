@@ -11,6 +11,7 @@ struct ReadmeGenerator {
         let sourceOwner: String         // Original repo owner (e.g., "onevcat")
         let tag: String                 // Version tag
         let requiresOwnerPrefix: Bool   // Whether binary repo uses owner_name format
+        let noLibraryEvolution: Bool    // Whether library evolution is disabled
     }
 
     /// Generate README content
@@ -38,6 +39,14 @@ struct ReadmeGenerator {
         .package(url: "\(config.binaryRepoURL)", from: "\(config.tag)")
         ```
         """
+
+        if config.noLibraryEvolution {
+            readme += """
+
+            > [!NOTE]
+            > Library evolution is disabled for this package to work around framework compilation issues. Binaries are built per-Swift-version and your SPM instance automatically selects the correct one for your toolchain via version-specific `Package@swift-X.Y.swift` manifests.
+            """
+        }
 
         // Only add package name change section if owner prefix is required
         if config.requiresOwnerPrefix {

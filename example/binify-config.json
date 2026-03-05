@@ -1,4 +1,5 @@
 {
     "source_repo": "https://github.com/onevcat/Kingfisher.git",
-    "requires_owner_prefix": true
+    "requires_owner_prefix": true,
+    "no_library_evolution": false
 }

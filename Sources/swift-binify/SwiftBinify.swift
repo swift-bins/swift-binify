@@ -46,6 +46,12 @@ struct SwiftBinify: AsyncParsableCommand {
     @Flag(name: .long, help: "Whether binary repo uses owner_name format (affects README)")
     var requiresOwnerPrefix: Bool = false
 
+    @Flag(name: .long, help: "Disable library evolution (builds are tied to a specific Swift version)")
+    var noLibraryEvolution: Bool = false
+
+    @Option(name: .long, help: "Swift version tag (e.g. '6.2') — required when --no-library-evolution is set")
+    var swiftVersionTag: String?
+
     func run() async throws {
         // Validate release mode parameters
         if outputMode == .release {
@@ -63,6 +69,14 @@ struct SwiftBinify: AsyncParsableCommand {
             }
             guard let _ = binaryRepo else {
                 Console.error("--binary-repo is required for release mode")
+                throw ExitCode.failure
+            }
+        }
+
+        // Validate no-library-evolution parameters
+        if noLibraryEvolution {
+            guard let _ = swiftVersionTag else {
+                Console.error("--swift-version-tag is required when --no-library-evolution is set")
                 throw ExitCode.failure
             }
         }
@@ -130,15 +144,22 @@ struct SwiftBinify: AsyncParsableCommand {
         packageURL: URL,
         packageIdentity: String
     ) async throws -> [String: String] {
+        let enableEvolution = !noLibraryEvolution
         let builder = XCFrameworkBuilder(
             packagePath: packageURL,
             packageName: packageIdentity,
             configuration: configuration,
             platforms: packageInfo.platforms,
-            dependencies: packageInfo.dependencies
+            dependencies: packageInfo.dependencies,
+            enableLibraryEvolution: enableEvolution,
+            swiftVersionTag: swiftVersionTag
         )
 
-        Console.buildStep("Building xcframeworks with Scipio")
+        if noLibraryEvolution {
+            Console.buildStep("Building xcframeworks with Scipio (no library evolution, swift-\(swiftVersionTag!))")
+        } else {
+            Console.buildStep("Building xcframeworks with Scipio")
+        }
         Console.blank()
 
         let targetNames = packageInfo.buildTargets.map { $0.name }
@@ -161,7 +182,20 @@ struct SwiftBinify: AsyncParsableCommand {
         if outputMode == .release && !succeeded.isEmpty {
             Console.step("Zipping xcframeworks")
             let zipper = XCFrameworkZipper()
-            zippedFrameworks = try zipper.zipAll(in: outputDir, targetNames: succeeded)
+            if let versionTag = swiftVersionTag {
+                let versionedDir = Constants.versionedOutputDirectory(
+                    for: outputDir.lastPathComponent,
+                    swiftVersion: versionTag
+                )
+                zippedFrameworks = try zipper.zipAll(
+                    in: versionedDir,
+                    targetNames: succeeded,
+                    zipOutputDir: outputDir,
+                    swiftVersionTag: versionTag
+                )
+            } else {
+                zippedFrameworks = try zipper.zipAll(in: outputDir, targetNames: succeeded)
+            }
             Console.blank()
         }
 
@@ -202,7 +236,6 @@ struct SwiftBinify: AsyncParsableCommand {
         outputDir: URL,
         zippedFrameworks: [ZippedFramework]
     ) throws {
-        Console.generateStep("Generating Package.swift")
         let generator = PackageGenerator()
 
         let releaseConfig: PackageGenerator.ReleaseConfig?
@@ -210,19 +243,32 @@ struct SwiftBinify: AsyncParsableCommand {
             releaseConfig = PackageGenerator.ReleaseConfig(
                 urlBase: urlBase,
                 tag: version,
-                zippedFrameworks: zippedFrameworks
+                zippedFrameworks: zippedFrameworks,
+                swiftVersionTag: swiftVersionTag
             )
         } else {
             releaseConfig = nil
         }
 
-        try generator.generate(
-            packageInfo: packageInfo,
-            builtProducts: succeeded,
-            outputDir: outputDir,
-            releaseConfig: releaseConfig
-        )
-        Console.success("\(outputDir.path)/Package.swift")
+        if noLibraryEvolution, let versionTag = swiftVersionTag {
+            Console.generateStep("Generating versioned Package manifests")
+            try generator.generateVersionedManifest(
+                packageInfo: packageInfo,
+                builtProducts: succeeded,
+                outputDir: outputDir,
+                swiftVersionTag: versionTag,
+                releaseConfig: releaseConfig
+            )
+        } else {
+            Console.generateStep("Generating Package.swift")
+            try generator.generate(
+                packageInfo: packageInfo,
+                builtProducts: succeeded,
+                outputDir: outputDir,
+                releaseConfig: releaseConfig
+            )
+            Console.success("\(outputDir.path)/Package.swift")
+        }
         Console.blank()
     }
 
@@ -244,7 +290,8 @@ struct SwiftBinify: AsyncParsableCommand {
             packageName: packageInfo.name,
             sourceOwner: sourceOwner,
             tag: version,
-            requiresOwnerPrefix: requiresOwnerPrefix
+            requiresOwnerPrefix: requiresOwnerPrefix,
+            noLibraryEvolution: noLibraryEvolution
         )
 
         try generator.write(config: config, to: outputDir)

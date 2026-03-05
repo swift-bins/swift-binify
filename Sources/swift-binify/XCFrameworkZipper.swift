@@ -13,16 +13,27 @@ struct XCFrameworkZipper {
 
     /// Zip all xcframeworks in the output directory
     /// - Parameters:
-    ///   - outputDir: Directory containing .xcframework folders
+    ///   - frameworkDir: Directory containing .xcframework folders
     ///   - targetNames: Names of targets to zip
+    ///   - zipOutputDir: Where to write the zip files (defaults to frameworkDir)
+    ///   - swiftVersionTag: Optional Swift version tag for versioned zip names (e.g. "6.2")
     /// - Returns: Array of zipped framework info with checksums
-    func zipAll(in outputDir: URL, targetNames: [String]) throws -> [ZippedFramework] {
+    func zipAll(
+        in frameworkDir: URL,
+        targetNames: [String],
+        zipOutputDir: URL? = nil,
+        swiftVersionTag: String? = nil
+    ) throws -> [ZippedFramework] {
         let fileManager = FileManager.default
+        let destDir = zipOutputDir ?? frameworkDir
         var results: [ZippedFramework] = []
 
         for targetName in targetNames {
-            let xcframeworkPath = outputDir.appendingPathComponent("\(targetName).xcframework")
-            let zipPath = outputDir.appendingPathComponent("\(targetName).xcframework.zip")
+            let xcframeworkPath = frameworkDir.appendingPathComponent("\(targetName).xcframework")
+            let zipName = swiftVersionTag != nil
+                ? "\(targetName)-swift-\(swiftVersionTag!).xcframework.zip"
+                : "\(targetName).xcframework.zip"
+            let zipPath = destDir.appendingPathComponent(zipName)
 
             guard fileManager.fileExists(atPath: xcframeworkPath.path) else {
                 Console.warning("XCFramework not found: \(targetName).xcframework")
@@ -44,7 +55,7 @@ struct XCFrameworkZipper {
                 checksum: checksum
             ))
 
-            Console.success("Zipped \(targetName).xcframework.zip", detail: "checksum: \(checksum.prefix(16))...")
+            Console.success("Zipped \(zipName)", detail: "checksum: \(checksum.prefix(16))...")
         }
 
         return results

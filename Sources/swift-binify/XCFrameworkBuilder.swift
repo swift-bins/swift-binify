@@ -9,11 +9,18 @@ struct XCFrameworkBuilder {
     let configuration: String
     let platforms: Set<Platform>
     let dependencies: [PackageInfo.Dependency]
+    let enableLibraryEvolution: Bool
+    let swiftVersionTag: String?
 
     /// Build all targets using Scipio, then copy only the ones we need
     func buildAll(targets: [String]) async throws -> [String: String] {
         let fileManager = FileManager.default
-        let outputDir = Constants.outputDirectory(for: packageName)
+        let outputDir: URL
+        if let tag = swiftVersionTag {
+            outputDir = Constants.versionedOutputDirectory(for: packageName, swiftVersion: tag)
+        } else {
+            outputDir = Constants.outputDirectory(for: packageName)
+        }
 
         // Create output directory
         try fileManager.createDirectory(at: outputDir, withIntermediateDirectories: true)
@@ -34,11 +41,16 @@ struct XCFrameworkBuilder {
                 try modifiedContent.write(to: packageSwiftURL, atomically: true, encoding: .utf8)
             }
 
-            // Clean previous Scipio output
+            // Clean previous Scipio output and build caches
             try? fileManager.removeItem(at: scipioOutputDir)
+            try? fileManager.removeItem(at: packagePath.appendingPathComponent(".build/scipio"))
 
             // Convert our platforms to Scipio platforms
             let scipioPlatforms: Set<Runner.Options.Platform> = Set(platforms.compactMap { $0.scipioPlatform })
+
+            let extraFlags: ExtraFlags? = enableLibraryEvolution
+                ? nil
+                : ExtraFlags(swiftFlags: ["-disable-access-control"])
 
             let runner = Runner(
                 mode: .createPackage,
@@ -49,7 +61,8 @@ struct XCFrameworkBuilder {
                         isSimulatorSupported: true,
                         isDebugSymbolsEmbedded: false,
                         frameworkType: .dynamic,
-                        enableLibraryEvolution: true
+                        extraFlags: extraFlags,
+                        enableLibraryEvolution: enableLibraryEvolution
                     ),
                     shouldOnlyUseVersionsFromResolvedFile: false,
                     frameworkCachePolicies: [],

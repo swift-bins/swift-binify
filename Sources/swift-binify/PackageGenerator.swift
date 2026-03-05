@@ -8,6 +8,14 @@ struct PackageGenerator {
         let urlBase: String  // e.g., "https://github.com/swift-bins/owner_repo/releases/download"
         let tag: String      // e.g., "1.0.0"
         let zippedFrameworks: [ZippedFramework]
+        let swiftVersionTag: String?
+
+        init(urlBase: String, tag: String, zippedFrameworks: [ZippedFramework], swiftVersionTag: String? = nil) {
+            self.urlBase = urlBase
+            self.tag = tag
+            self.zippedFrameworks = zippedFrameworks
+            self.swiftVersionTag = swiftVersionTag
+        }
 
         /// Get checksum for a target name
         func checksum(for targetName: String) -> String? {
@@ -16,7 +24,10 @@ struct PackageGenerator {
 
         /// Build full URL for a zipped framework
         func url(for targetName: String) -> String {
-            "\(urlBase)/\(tag)/\(targetName).xcframework.zip"
+            if let version = swiftVersionTag {
+                return "\(urlBase)/\(tag)/\(targetName)-swift-\(version).xcframework.zip"
+            }
+            return "\(urlBase)/\(tag)/\(targetName).xcframework.zip"
         }
     }
 
@@ -26,20 +37,61 @@ struct PackageGenerator {
     ///   - builtProducts: Names of the successfully built targets/xcframeworks
     ///   - outputDir: Where to write the Package.swift
     ///   - releaseConfig: Optional config for release mode (URL-based targets)
+    ///   - swiftVersionTag: Optional Swift version tag (e.g. "6.2") for versioned subdirectory paths
     func generate(
         packageInfo: PackageInfo,
         builtProducts: [String],
         outputDir: URL,
-        releaseConfig: ReleaseConfig? = nil
+        releaseConfig: ReleaseConfig? = nil,
+        swiftVersionTag: String? = nil
     ) throws {
         let content = generatePackageSwift(
             packageInfo: packageInfo,
             builtTargets: Set(builtProducts),
-            releaseConfig: releaseConfig
+            releaseConfig: releaseConfig,
+            swiftVersionTag: swiftVersionTag
         )
 
         let packageSwiftURL = outputDir.appendingPathComponent("Package.swift")
         try content.write(to: packageSwiftURL, atomically: true, encoding: .utf8)
+    }
+
+    /// Generate a versioned `Package@swift-X.Y.swift` manifest for a specific Swift version,
+    /// plus update the fallback `Package.swift` to point at this version.
+    /// Designed to be called once per Swift version (each invocation has its own checksums).
+    func generateVersionedManifest(
+        packageInfo: PackageInfo,
+        builtProducts: [String],
+        outputDir: URL,
+        swiftVersionTag: String,
+        releaseConfig: ReleaseConfig? = nil
+    ) throws {
+        let builtTargets = Set(builtProducts)
+
+        // Generate Package@swift-X.Y.swift for this version
+        let versionedContent = generatePackageSwift(
+            packageInfo: packageInfo,
+            builtTargets: builtTargets,
+            releaseConfig: releaseConfig,
+            swiftVersionTag: swiftVersionTag,
+            overrideToolsVersion: swiftVersionTag
+        )
+
+        let versionedURL = outputDir.appendingPathComponent("Package@swift-\(swiftVersionTag).swift")
+        try versionedContent.write(to: versionedURL, atomically: true, encoding: .utf8)
+        Console.success(versionedURL.path)
+
+        // Also update the fallback Package.swift (last invocation wins = latest version)
+        let fallbackContent = generatePackageSwift(
+            packageInfo: packageInfo,
+            builtTargets: builtTargets,
+            releaseConfig: releaseConfig,
+            swiftVersionTag: swiftVersionTag
+        )
+
+        let packageSwiftURL = outputDir.appendingPathComponent("Package.swift")
+        try fallbackContent.write(to: packageSwiftURL, atomically: true, encoding: .utf8)
+        Console.success(packageSwiftURL.path)
     }
 
     // MARK: - Private Helpers
@@ -47,16 +99,19 @@ struct PackageGenerator {
     private func generatePackageSwift(
         packageInfo: PackageInfo,
         builtTargets: Set<String>,
-        releaseConfig: ReleaseConfig?
+        releaseConfig: ReleaseConfig?,
+        swiftVersionTag: String? = nil,
+        overrideToolsVersion: String? = nil
     ) -> String {
         var lines: [String] = []
 
-        appendHeader(to: &lines, toolsVersion: packageInfo.toolsVersion)
+        let toolsVersion = overrideToolsVersion ?? packageInfo.toolsVersion
+        appendHeader(to: &lines, toolsVersion: toolsVersion)
         appendPackageDeclaration(to: &lines, name: packageInfo.name)
         appendPlatforms(to: &lines, platformVersions: packageInfo.platformVersions)
         appendProducts(to: &lines, products: packageInfo.products, builtTargets: builtTargets)
         appendDependencies(to: &lines, dependencies: packageInfo.dependencies, releaseConfig: releaseConfig)
-        appendTargets(to: &lines, builtTargets: builtTargets, releaseConfig: releaseConfig)
+        appendTargets(to: &lines, builtTargets: builtTargets, releaseConfig: releaseConfig, swiftVersionTag: swiftVersionTag)
         appendFooter(to: &lines)
 
         return lines.joined(separator: "\n")
@@ -135,7 +190,8 @@ struct PackageGenerator {
     private func appendTargets(
         to lines: inout [String],
         builtTargets: Set<String>,
-        releaseConfig: ReleaseConfig?
+        releaseConfig: ReleaseConfig?,
+        swiftVersionTag: String? = nil
     ) {
         lines.append("    targets: [")
         let sortedTargets = builtTargets.sorted()
@@ -144,7 +200,6 @@ struct PackageGenerator {
 
             if let releaseConfig = releaseConfig,
                let checksum = releaseConfig.checksum(for: targetName) {
-                // Release mode: URL-based binary target with checksum
                 let url = releaseConfig.url(for: targetName)
                 lines.append("        .binaryTarget(")
                 lines.append("            name: \"\(targetName)\",")
@@ -152,10 +207,10 @@ struct PackageGenerator {
                 lines.append("            checksum: \"\(checksum)\"")
                 lines.append("        )\(comma)")
             } else {
-                // Local mode: path-based binary target
+                let pathPrefix = swiftVersionTag != nil ? "swift-\(swiftVersionTag!)/" : ""
                 lines.append("        .binaryTarget(")
                 lines.append("            name: \"\(targetName)\",")
-                lines.append("            path: \"\(targetName).xcframework\"")
+                lines.append("            path: \"\(pathPrefix)\(targetName).xcframework\"")
                 lines.append("        )\(comma)")
             }
         }
