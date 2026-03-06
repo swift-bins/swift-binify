@@ -235,9 +235,10 @@ jobs:
             echo "::group::Building for Swift $SWIFT_VER"
 
             # Switch to this Swift version via swiftly (installed by swift-actions/setup-swift)
-            swiftly install "$SWIFT_VER" --assume-yes 2>/dev/null || true
-            swiftly use "$SWIFT_VER" --assume-yes 2>/dev/null || true
+            swiftly install "$SWIFT_VER" --assume-yes || echo "::warning::Failed to install Swift $SWIFT_VER"
+            swiftly use "$SWIFT_VER" --assume-yes || echo "::warning::Failed to switch to Swift $SWIFT_VER"
             echo "Active Swift version:"
+            which swift
             swift --version
 
             # Re-clone source to get a clean Package.swift (swift-binify modifies it during build)
