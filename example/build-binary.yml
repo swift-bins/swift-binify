@@ -162,11 +162,19 @@ jobs:
             xcodebuild -version
           fi
 
-      - name: Setup Swift
+      - name: Install swiftly
         if: steps.check.outputs.skip_build != 'true'
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.2"
+        run: |
+          curl -sLO https://download.swift.org/swiftly/darwin/swiftly.pkg
+          installer -pkg swiftly.pkg -target CurrentUserHomeDirectory
+          ~/.swiftly/bin/swiftly init --quiet-shell-followup --assume-yes
+          echo "$HOME/.swiftly/bin" >> $GITHUB_PATH
+
+      - name: Install Swift 6.2
+        if: steps.check.outputs.skip_build != 'true'
+        run: |
+          swiftly install 6.2 --assume-yes
+          swift --version
 
       - name: Clone source repo at tag
         if: steps.check.outputs.skip_build != 'true'
@@ -234,9 +242,8 @@ jobs:
           for SWIFT_VER in $SWIFT_VERSIONS; do
             echo "::group::Building for Swift $SWIFT_VER"
 
-            # Switch to this Swift version via swiftly (installed by swift-actions/setup-swift)
-            swiftly install "$SWIFT_VER" --assume-yes || echo "::warning::Failed to install Swift $SWIFT_VER"
-            swiftly use "$SWIFT_VER" --assume-yes || echo "::warning::Failed to switch to Swift $SWIFT_VER"
+            swiftly install "$SWIFT_VER" --assume-yes || { echo "::error::Failed to install Swift $SWIFT_VER"; exit 1; }
+            swiftly use "$SWIFT_VER" --assume-yes
             echo "Active Swift version:"
             which swift
             swift --version
