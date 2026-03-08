@@ -176,6 +176,19 @@ jobs:
           swiftly install 6.2 --assume-yes
           swift --version
 
+          # Set TOOLCHAINS so xcrun resolves to the swiftly-installed toolchain.
+          # Scipio uses /usr/bin/xcrun to find swiftc, which ignores PATH and
+          # defaults to the Xcode toolchain unless TOOLCHAINS is set.
+          REAL_SWIFT=$(python3 -c "import os; print(os.path.realpath('$(which swift)'))")
+          TOOLCHAIN_DIR=$(echo "$REAL_SWIFT" | grep -oE '.+\.xctoolchain')
+          if [ -n "$TOOLCHAIN_DIR" ] && [ -f "$TOOLCHAIN_DIR/Info.plist" ]; then
+            TOOLCHAIN_ID=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$TOOLCHAIN_DIR/Info.plist")
+            echo "TOOLCHAINS=$TOOLCHAIN_ID" >> $GITHUB_ENV
+            echo "TOOLCHAINS=$TOOLCHAIN_ID"
+          else
+            echo "::warning::Could not determine toolchain bundle ID for Swift 6.2"
+          fi
+
       - name: Clone source repo at tag
         if: steps.check.outputs.skip_build != 'true'
         env:
@@ -246,6 +259,18 @@ jobs:
             echo "Active Swift version:"
             which swift
             swift --version
+
+            # Set TOOLCHAINS so xcrun resolves to the swiftly-installed toolchain.
+            # Scipio uses /usr/bin/xcrun to find swiftc, which ignores PATH and
+            # defaults to the Xcode toolchain unless TOOLCHAINS is set.
+            REAL_SWIFT=$(python3 -c "import os; print(os.path.realpath('$(which swift)'))")
+            TOOLCHAIN_DIR=$(echo "$REAL_SWIFT" | grep -oE '.+\.xctoolchain')
+            if [ -n "$TOOLCHAIN_DIR" ] && [ -f "$TOOLCHAIN_DIR/Info.plist" ]; then
+              export TOOLCHAINS=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$TOOLCHAIN_DIR/Info.plist")
+              echo "TOOLCHAINS=$TOOLCHAINS"
+            else
+              echo "::warning::Could not determine toolchain bundle ID for Swift $SWIFT_VER"
+            fi
 
             # Re-clone source to get a clean Package.swift (swift-binify modifies it during build)
             rm -rf /tmp/source
